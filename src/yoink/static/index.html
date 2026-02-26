@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Yoink</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    gap: 14px;
+  }
+  h1 { font-size: 1.4rem; letter-spacing: 2px; color: #7cf; }
+  video {
+    max-width: 100%;
+    width: 900px;
+    background: #000;
+    border: 1px solid #333;
+    border-radius: 4px 4px 0 0;
+  }
+  #waveform {
+    display: block;
+    width: 900px;
+    max-width: 100%;
+    height: 80px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    cursor: crosshair;
+  }
+  #waveStatus {
+    font-size: 0.75rem;
+    color: #555;
+    align-self: flex-start;
+    margin-left: calc(50% - 450px);
+  }
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 900px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .divider {
+    border: none;
+    border-top: 1px solid #2a2a2a;
+    margin: 2px 0;
+  }
+  button {
+    background: #2a2a2a;
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.9rem;
+    transition: background 0.1s;
+  }
+  button:hover { background: #3a3a3a; }
+  button.primary {
+    background: #1a4a7a;
+    border-color: #3a8adf;
+    color: #fff;
+  }
+  button.primary:hover { background: #1e5a9a; }
+  button.export-btn {
+    background: #1a5a2a;
+    border-color: #3aaf5a;
+    color: #fff;
+    font-size: 1rem;
+    padding: 8px 24px;
+  }
+  button.export-btn:hover { background: #1e7a3a; }
+  button.export-btn:disabled {
+    background: #1a2a1a;
+    border-color: #2a4a2a;
+    color: #666;
+    cursor: default;
+  }
+input[type="number"], input[type="text"] {
+    background: #1a1a1a;
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: monospace;
+    font-size: 0.9rem;
+  }
+  input[type="number"] { width: 100px; }
+  input[type="text"] { width: 220px; }
+  .label {
+    color: #aaa;
+    font-size: 0.85rem;
+    min-width: 54px;
+  }
+  .timestamp {
+    color: #7cf;
+    font-size: 0.85rem;
+    min-width: 90px;
+  }
+  #status {
+    font-size: 0.85rem;
+    min-height: 1.2em;
+  }
+  #status.ok { color: #6d6; }
+  #status.err { color: #f86; }
+  #status.info { color: #fa8; }
+  .frame-btns button { padding: 4px 10px; font-size: 0.85rem; }
+  kbd {
+    background: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 0.8rem;
+    color: #ccc;
+  }
+  .hint { color: #555; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>⬇ YOINK</h1>
+
+<video id="v" src="/video" controls></video>
+<canvas id="waveform" width="900" height="80"></canvas>
+<span id="waveStatus"></span>
+
+<div class="controls">
+
+  <!-- Frame stepping -->
+  <div class="row frame-btns">
+    <span class="label">Frame:</span>
+    <button id="prevFrame">&#9664; Prev</button>
+    <button id="nextFrame">Next &#9654;</button>
+    <span class="hint"><kbd>←</kbd><kbd>→</kbd> arrow keys</span>
+  </div>
+
+  <hr class="divider">
+
+  <!-- Mark In -->
+  <div class="row">
+    <button id="markIn" class="primary">Mark In</button>
+    <span class="timestamp" id="inDisplay">--:--:--</span>
+    <span class="label">or</span>
+    <input type="number" id="inTime" min="0" step="0.001" placeholder="start (s)">
+    <span class="hint">seconds</span>
+  </div>
+
+  <!-- Mark Out -->
+  <div class="row">
+    <button id="markOut" class="primary">Mark Out</button>
+    <span class="timestamp" id="outDisplay">--:--:--</span>
+    <span class="label">or</span>
+    <input type="number" id="outTime" min="0" step="0.001" placeholder="end (s)">
+    <span class="hint">seconds</span>
+  </div>
+
+  <hr class="divider">
+
+  <!-- Export filename -->
+  <div class="row">
+    <span class="label">Save as:</span>
+    <input type="text" id="exportFilename" value="clip.mp4" spellcheck="false">
+    <span class="hint">saved to ~/Downloads/</span>
+  </div>
+
+  <!-- Export button -->
+  <div class="row">
+    <button id="exportBtn" class="export-btn">Export Clip</button>
+    <span id="status" class="info"></span>
+  </div>
+
+
+</div>
+
+<script>
+  const v = document.getElementById('v');
+  const waveCanvas = document.getElementById('waveform');
+  const waveCtx = waveCanvas.getContext('2d');
+
+  // Logical canvas dimensions
+  const W = 900, H = 80;
+  // Handle Retina / high-DPI
+  const dpr = window.devicePixelRatio || 1;
+  waveCanvas.width = W * dpr;
+  waveCanvas.height = H * dpr;
+  waveCtx.scale(dpr, dpr);
+
+  let fps = 30;
+  let frameDuration = 1 / fps;
+  let videoDuration = 0;
+  let waveformPeaks = null;  // Float32Array[W]
+
+  // ── Video info ────────────────────────────────────────────────────────────
+
+  fetch('/video_info')
+    .then(r => r.json())
+    .then(info => {
+      fps = info.fps;
+      frameDuration = 1 / fps;
+      const fnInput = document.getElementById('exportFilename');
+      if (info.default_filename) fnInput.value = info.default_filename;
+    })
+    .catch(() => {});
+
+  v.addEventListener('loadedmetadata', () => {
+    videoDuration = v.duration;
+    drawWaveform();
+  });
+
+  // ── Waveform ──────────────────────────────────────────────────────────────
+
+  async function loadWaveform() {
+    const waveStatus = document.getElementById('waveStatus');
+    waveStatus.textContent = 'Loading waveform…';
+    try {
+      const resp = await fetch('/video');
+      const ab = await resp.arrayBuffer();
+      const ac = new AudioContext();
+      const audioBuffer = await ac.decodeAudioData(ab);
+      ac.close();
+
+      if (!videoDuration) videoDuration = audioBuffer.duration;
+
+      // Mix to mono
+      const numCh = audioBuffer.numberOfChannels;
+      const len = audioBuffer.length;
+      const mono = new Float32Array(len);
+      for (let c = 0; c < numCh; c++) {
+        const ch = audioBuffer.getChannelData(c);
+        for (let i = 0; i < len; i++) mono[i] += ch[i] / numCh;
+      }
+
+      // Downsample to W peaks
+      waveformPeaks = new Float32Array(W);
+      const spp = len / W;
+      for (let px = 0; px < W; px++) {
+        const s = Math.floor(px * spp);
+        const e = Math.floor((px + 1) * spp);
+        let peak = 0;
+        for (let i = s; i < e; i++) {
+          const a = Math.abs(mono[i]);
+          if (a > peak) peak = a;
+        }
+        waveformPeaks[px] = peak;
+      }
+
+      waveStatus.textContent = '';
+      drawWaveform();
+    } catch (err) {
+      waveStatus.textContent = `Waveform: ${err.message}`;
+    }
+  }
+
+  function drawWaveform() {
+    waveCtx.fillStyle = '#1a1a1a';
+    waveCtx.fillRect(0, 0, W, H);
+
+    if (!videoDuration) return;
+
+    // In/out region highlight
+    if (inTime != null && outTime != null) {
+      const x1 = (inTime / videoDuration) * W;
+      const x2 = (outTime / videoDuration) * W;
+      waveCtx.fillStyle = 'rgba(58, 138, 223, 0.13)';
+      waveCtx.fillRect(x1, 0, x2 - x1, H);
+    }
+
+    // Waveform bars
+    if (waveformPeaks) {
+      const cx = v.currentTime > 0 ? (v.currentTime / videoDuration) * W : -1;
+      for (let px = 0; px < W; px++) {
+        const amp = waveformPeaks[px];
+        const barH = Math.max(1, amp * H * 0.92);
+        const y = (H - barH) / 2;
+        // Dim bars behind playhead
+        waveCtx.fillStyle = px < cx ? '#2a5a2a' : '#3aaf5a';
+        waveCtx.fillRect(px, y, 1, barH);
+      }
+    }
+
+    // In marker
+    if (inTime != null) {
+      const x = (inTime / videoDuration) * W;
+      waveCtx.strokeStyle = '#5aafff';
+      waveCtx.lineWidth = 1.5;
+      waveCtx.beginPath();
+      waveCtx.moveTo(x, 0); waveCtx.lineTo(x, H);
+      waveCtx.stroke();
+      waveCtx.fillStyle = '#5aafff';
+      waveCtx.font = '10px monospace';
+      waveCtx.fillText('IN', x + 3, 11);
+    }
+
+    // Out marker
+    if (outTime != null) {
+      const x = (outTime / videoDuration) * W;
+      waveCtx.strokeStyle = '#5aafff';
+      waveCtx.lineWidth = 1.5;
+      waveCtx.beginPath();
+      waveCtx.moveTo(x, 0); waveCtx.lineTo(x, H);
+      waveCtx.stroke();
+      waveCtx.fillStyle = '#5aafff';
+      waveCtx.font = '10px monospace';
+      waveCtx.textAlign = 'right';
+      waveCtx.fillText('OUT', x - 3, 11);
+      waveCtx.textAlign = 'left';
+    }
+
+    // Playhead
+    if (videoDuration > 0) {
+      const x = (v.currentTime / videoDuration) * W;
+      waveCtx.strokeStyle = 'rgba(255,255,255,0.7)';
+      waveCtx.lineWidth = 1;
+      waveCtx.beginPath();
+      waveCtx.moveTo(x, 0); waveCtx.lineTo(x, H);
+      waveCtx.stroke();
+    }
+  }
+
+  // Click waveform to seek
+  waveCanvas.addEventListener('click', e => {
+    if (!videoDuration) return;
+    const rect = waveCanvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (waveCanvas.width / rect.width) / dpr;
+    v.currentTime = (x / W) * videoDuration;
+  });
+
+  // Redraw on playback
+  v.addEventListener('timeupdate', drawWaveform);
+
+  // Start loading waveform
+  loadWaveform();
+
+  // ── Timestamp formatting ──────────────────────────────────────────────────
+
+  function fmt(seconds) {
+    if (seconds == null || isNaN(seconds)) return '--:--:--';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = (seconds % 60).toFixed(3);
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s.padStart(6,'0')}`;
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────────
+
+  let inTime = null;
+  let outTime = null;
+
+  function setIn(t) {
+    inTime = t;
+    document.getElementById('inDisplay').textContent = fmt(t);
+    document.getElementById('inTime').value = t != null ? t.toFixed(3) : '';
+    drawWaveform();
+  }
+
+  function setOut(t) {
+    outTime = t;
+    document.getElementById('outDisplay').textContent = fmt(t);
+    document.getElementById('outTime').value = t != null ? t.toFixed(3) : '';
+    drawWaveform();
+  }
+
+  // ── Mark buttons ──────────────────────────────────────────────────────────
+
+  document.getElementById('markIn').addEventListener('click', () => setIn(v.currentTime));
+  document.getElementById('markOut').addEventListener('click', () => setOut(v.currentTime));
+
+  document.getElementById('inTime').addEventListener('change', e => {
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val)) setIn(val);
+  });
+
+  document.getElementById('outTime').addEventListener('change', e => {
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val)) setOut(val);
+  });
+
+  // ── Frame stepping ────────────────────────────────────────────────────────
+
+  function stepFrame(dir) {
+    v.pause();
+    v.currentTime = Math.max(0, v.currentTime + dir * frameDuration);
+  }
+
+  document.getElementById('prevFrame').addEventListener('click', () => stepFrame(-1));
+  document.getElementById('nextFrame').addEventListener('click', () => stepFrame(1));
+
+  // Capture phase so we intercept before the <video controls> native handler
+  document.addEventListener('keydown', e => {
+    const tag = document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); stepFrame(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); stepFrame(1); }
+  }, true);
+
+  // ── Export ────────────────────────────────────────────────────────────────
+
+  const exportBtn = document.getElementById('exportBtn');
+  const statusEl = document.getElementById('status');
+
+  function setStatus(msg, cls = 'info') {
+    statusEl.textContent = msg;
+    statusEl.className = cls;
+  }
+
+  exportBtn.addEventListener('click', async () => {
+    if (inTime == null || outTime == null) {
+      setStatus('Set both In and Out points first.', 'err'); return;
+    }
+    if (outTime <= inTime) {
+      setStatus('Out must be after In.', 'err'); return;
+    }
+
+    const filename = document.getElementById('exportFilename').value.trim() || 'clip.mp4';
+    exportBtn.disabled = true;
+    setStatus('Exporting…', 'info');
+
+    try {
+      const resp = await fetch('/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: inTime, end: outTime, filename }),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        setStatus(`Error: ${text}`, 'err');
+        exportBtn.disabled = false;
+        return;
+      }
+
+      await resp.json();
+      window.location.href = '/clip';
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, 'err');
+      exportBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

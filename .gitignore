@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# uv / virtualenv
+.venv/
+uv.lock
+
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+
+# Runtime artifacts
+/tmp/yoink/
+task.md

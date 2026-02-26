@@ -1,0 +1,21 @@
+[project]
+name = "yoink"
+version = "0.1.0"
+description = "Download a video, clip it in the browser, export it — all in one command."
+readme = "README.md"
+license = { text = "Unlicense" }
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.urls]
+Repository = "https://github.com/lowen/yoink"
+
+[project.scripts]
+yoink = "yoink.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
