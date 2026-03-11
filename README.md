@@ -2,9 +2,12 @@
 
 Download a video, clip it in the browser, export it — all in one command.
 
+```text
+yoink <url> [--section "*00:01:00-00:02:00"]
 ```
-yoink <url>
-```
+
+Optional:
+- `--section` or `-s` (eg. `*00:01:00-00:02:00`, `*12-24`, etc.) for partial download.
 
 ## How it works
 
@@ -40,6 +43,10 @@ yoink <url>
 ```
 
 Any URL supported by yt-dlp works (YouTube, Vimeo, Twitter/X, etc.).
+
+Default download quality is capped at **1080p**. The downloader now prefers a single-file stream (`best[height<=1080]`) first, and falls back to `bestvideo[height<=1080]+bestaudio` only when needed.
+
+Exports are re-encoded to HEVC when possible, using hardware acceleration if a hardware HEVC encoder is available. If hardware HEVC is unavailable, it falls back to `libx265` and then `libx264`.
 
 ### Browser controls
 

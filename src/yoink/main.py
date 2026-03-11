@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+import argparse
 from pathlib import Path
 
 import uvicorn
@@ -16,6 +17,16 @@ from pydantic import BaseModel
 
 STATIC_DIR = Path(__file__).parent / "static"
 DOWNLOAD_DIR = Path("/tmp/yoink")
+DEFAULT_VIDEO_FORMAT = "best[height<=1080]/bestvideo[height<=1080]+bestaudio"
+HEVC_ENCODER_PREFERENCE = (
+    "hevc_videotoolbox",
+    "hevc_nvenc",
+    "hevc_qsv",
+    "hevc_amf",
+    "hevc_vaapi",
+)
+
+_cached_video_encoder: str | None = None
 
 app = FastAPI()
 state: dict = {}
@@ -26,6 +37,70 @@ def sanitize(title: str) -> str:
     s = re.sub(r"[^\w\s-]", "", title)
     s = re.sub(r"\s+", "_", s.strip())
     return s[:80] or "video"
+
+
+def sanitize_filename(name: str) -> str:
+    safe = re.sub(r"[^\w.\- ]", "_", name.strip())
+    safe = re.sub(r"\s+", "_", safe)
+    if not safe:
+        return "clip.mp4"
+    return safe[:140]
+
+
+def normalize_section(section: str) -> str | None:
+    if not section:
+        return None
+
+    s = section.strip()
+    if not s:
+        return None
+
+    if s.startswith("*"):
+        return s
+
+    # Common user inputs are raw timestamp ranges like 00:01:00-00:02:00 or 90-120.
+    # yt-dlp requires a selector prefix for section matching.
+    if "-" in s and (":" in s or all(ch.isdigit() or ch in ".-:" for ch in s)):
+        return f"*{s}"
+
+    return s
+
+
+def _get_available_encoders() -> set[str]:
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return set()
+
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and re.match(r"^[VAS][A-Z\.DIBS]{5,}", parts[0]):
+            encoders.add(parts[1])
+    return encoders
+
+
+def _select_export_video_encoder() -> str:
+    global _cached_video_encoder
+    if _cached_video_encoder is not None:
+        return _cached_video_encoder
+
+    encoders = _get_available_encoders()
+
+    for name in HEVC_ENCODER_PREFERENCE:
+        if name in encoders:
+            _cached_video_encoder = name
+            return name
+
+    if "libx265" in encoders:
+        _cached_video_encoder = "libx265"
+        return "libx265"
+
+    _cached_video_encoder = "libx264"
+    return "libx264"
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -112,18 +187,27 @@ async def export(req: ExportRequest):
     if not input_path or not Path(input_path).exists():
         raise HTTPException(404, "Video not found")
 
-    filename = Path(req.filename).name or "clip.mp4"
+    if not isinstance(req.start, (int, float)) or not isinstance(req.end, (int, float)):
+        raise HTTPException(400, "start and end must be numeric")
+    if req.start < 0 or req.end <= req.start:
+        raise HTTPException(400, "start must be >= 0 and end must be greater than start")
+
+    filename = sanitize_filename(Path(req.filename).name)
+    if not filename.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+        filename = f"{filename}.mp4"
 
     downloads = Path.home() / "Downloads"
     downloads.mkdir(exist_ok=True)
     out_path = downloads / filename
 
+    codec = _select_export_video_encoder()
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-hide_banner",
         "-i", str(input_path),
         "-ss", str(req.start),
         "-to", str(req.end),
-        "-c", "copy",
+        "-c:v", codec,
+        "-c:a", "aac",
         str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -168,14 +252,24 @@ def fetch_title(url: str) -> str:
     return "video"
 
 
-def download_video(url: str) -> Path:
+def download_video(url: str, section: str | None = None) -> Path:
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     for f in DOWNLOAD_DIR.glob("video.*"):
         f.unlink(missing_ok=True)
 
     template = str(DOWNLOAD_DIR / "video.%(ext)s")
+    args = [
+        "yt-dlp",
+        "-o", template,
+        "-f", DEFAULT_VIDEO_FORMAT,
+    ]
+    if section:
+        section = normalize_section(section)
+        if section:
+            args.extend(["--download-sections", section])
+    args.append(url)
     subprocess.run(
-        ["yt-dlp", "-o", template, url],
+        args,
         check=True,
     )
 
@@ -189,13 +283,29 @@ def download_video(url: str) -> Path:
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 def cli():
-    if len(sys.argv) < 2:
-        print("Usage: yoink <url>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Download and trim a video with a browser editor."
+    )
+    parser.add_argument("url", help="Video URL supported by yt-dlp")
+    parser.add_argument(
+        "--section",
+        help="Optional yt-dlp section selector (eg: '*00:01:00-00:02:00')",
+    )
+    parser.add_argument(
+        "-s",
+        "--sections",
+        help="Alias for --section",
+    )
+    args = parser.parse_args()
 
-    url = sys.argv[1]
+    url = args.url
+    section = args.section or args.sections
+
     if not url.startswith(("http://", "https://")):
         print(f"Error: '{url}' doesn't look like a URL", file=sys.stderr)
+        sys.exit(1)
+    if section is not None and not section.strip():
+        print("Error: --section cannot be empty", file=sys.stderr)
         sys.exit(1)
 
     print(f"Fetching title: {url}")
@@ -203,8 +313,10 @@ def cli():
     state["title"] = title
     print(f"Title: {title}")
 
+    if section:
+        print(f"Downloading section: {section}")
     print(f"Downloading: {url}")
-    video_path = download_video(url)
+    video_path = download_video(url, section=section.strip() if section else None)
     print(f"Downloaded: {video_path}")
 
     state["video_path"] = str(video_path)
